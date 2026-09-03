@@ -1,0 +1,127 @@
+#Mission Info
+
+$Name: XSTR("Sample", -1)
+
+#Objects
+
+$Name: Alpha 2		;! Object #1
+$Class: GTF Apollo
+$Callsign: Vapor
++Persona Name: Vapor
+
+$Name: Alpha 3		;! Object #2
+$Class: GTF Apollo
+$Callsign: Brick
+
+#Events
+
+$Formula: ( when
+   ( true )
+   ( set-message-alias "A2" "Alpha 2" )
+   ( set-freetext-message-alias "COM" "#Command" )
+)
++Name: Init
+
+$Formula: ( when
+   ( has-time-elapsed 2 )
+   ( send-message
+      "Alpha 2"
+      "Normal"
+      "hello"
+   )
+)
++Name: greet
+
+$Formula: ( when
+   ( true )
+   ( send-message-list
+      "#Command"
+      "Normal"
+      "orders"
+      0
+      "Alpha 3"
+      "High"
+      "reply"
+      5000
+   )
+)
++Name: list
+
+$Formula: ( when
+   ( true )
+   ( send-message-list-alt
+      "A2: on station"
+      6000
+      "COM: acknowledged"
+      4000
+   )
+)
++Name: altlist
+
+$Formula: ( when
+   ( true )
+   ( send-message-alt
+      ( true )
+      "A2: fallback"
+      ( true )
+   )
+)
++Name: altsingle
+
+$Formula: ( when
+   ( has-time-elapsed 1 )
+   ( training-msg "lesson1" )
+)
++Name: train
+
+#Messages		;! total
+
+$Command Sender: Steelward Control
+
+$Name: hello
+$Team: -1
+$MessageNew:  XSTR("Alpha wing, form up on me.", -1)
+$end_multi_text
++AVI Name: Head-TP1
++Wave Name: v99_m001.wav
+
+$Name: orders
+$Team: -1
+$MessageNew:  XSTR("Proceed to the nav point
+and hold position.", -1)
+$end_multi_text
++Wave Name: msg.wav
+
+$Name: reply
+$Team: -1
+$MessageNew:  XSTR("Copy that, moving out.", -1)
+$end_multi_text
++Persona: Large Ship
+
+$Name: A2: on station
+$Team: -1
+$MessageNew:  XSTR("Alpha 2 on station.", -1)
+$end_multi_text
+
+$Name: COM: acknowledged
+$Team: -1
+$MessageNew:  XSTR("Acknowledged, Alpha 2.", -1)
+$end_multi_text
+
+$Name: A2: fallback
+$Team: -1
+$MessageNew:  XSTR("Falling back to the group.", -1)
+$end_multi_text
+
+$Name: lesson1
+$Team: -1
+$MessageNew:  XSTR("Welcome to flight school.", -1)
+$end_multi_text
++Wave Name: v99_t01.ogg
+
+$Name: unused_line
+$Team: -1
+$MessageNew:  XSTR("Nobody triggers me.", -1)
+$end_multi_text
+
+#End
