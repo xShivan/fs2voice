@@ -2,6 +2,73 @@
 
 $Name: XSTR("Sample", -1)
 
+#Command Briefing
+$Stage Text:
+ XSTR("$b Welcome $b aboard
+Date: 11$slash04$slash2333", -1)
+$end_multi_text
+$Ani Filename: <default>
++Wave Filename: v99_cb01.wav
+$Stage Text:
+ XSTR("Second stage.
+#not a section header", -1)
+$end_multi_text
+$Ani Filename: <default>
++Wave Filename: none.wav
+
+#Briefing
+$start_briefing
+$num_stages: 2
+$start_stage
+$multi_text
+ XSTR("Welcome to $f Steelward, pilots.", -1)
+$end_multi_text
+$voice: v99_b01.wav
+$Formula: ( true )
+$start_icon
+$type: 15
+$label:  XSTR("Station", -1)
+$multi_text
+ XSTR("Icon description, not voiced.", -1)
+$end_multi_text
+$end_icon
+$end_stage
+$start_stage
+$multi_text
+ XSTR("Stay $h sharp.", -1)
+$end_multi_text
+$voice: v99_b02.wav
+$Formula: ( true )
+$end_stage
+$end_briefing
+
+#Debriefing_info
+
+$Num stages: 2
+
+$Formula: ( is-event-true-delay
+   "DB success"
+   0
+)
+$Multi text
+    XSTR("Good work.
+
+Dismissed.", -1)
+$end_multi_text
+$Voice: v99_db01.wav
+$Recommendation text:
+    XSTR("Recommendation, not voiced.", -1)
+$end_multi_text
+
+$Formula: ( true )
+$Multi text
+    XSTR("Always shown.", -1)
+$end_multi_text
+$Voice: none.wav
+$Recommendation text:
+    XSTR("", -1)
+$end_multi_text
+
 #Objects
 
 $Name: Alpha 2		;! Object #1

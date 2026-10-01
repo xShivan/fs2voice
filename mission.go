@@ -27,6 +27,9 @@ type mission struct {
 	Messages      map[string]*message
 	Ships         map[string]*shipInfo
 	Formulas      []*node // parsed $Formula: SEXP trees from #Events
+	CmdBriefing   []briefStage
+	Briefings     [][]briefStage // one per $start_briefing (per team in multiplayer)
+	Debriefing    []briefStage
 }
 
 var (
@@ -50,19 +53,17 @@ func parseMission(file string, raw []byte) *mission {
 	// ignores '#' lines occurring inside a message's multi-line text block.
 	section := ""
 	inMultiText := false
-	var msgLines, objLines, evtLines []string
+	var msgLines, objLines, evtLines, cbLines, brLines, dbLines []string
 	for _, ln := range lines {
 		trimmed := strings.TrimRight(ln, " \t")
 		if !inMultiText && strings.HasPrefix(trimmed, "#") {
 			section = sectionName(trimmed)
 			continue
 		}
-		switch {
-		case strings.HasPrefix(strings.TrimSpace(ln), "$MessageNew:"),
-			strings.HasPrefix(strings.TrimSpace(ln), "$Message:"):
-			inMultiText = true
-		case strings.TrimSpace(ln) == "$end_multi_text":
+		if strings.TrimSpace(ln) == "$end_multi_text" {
 			inMultiText = false
+		} else if startsMultiText(ln) {
+			inMultiText = true
 		}
 		switch section {
 		case "Messages":
@@ -71,13 +72,31 @@ func parseMission(file string, raw []byte) *mission {
 			objLines = append(objLines, ln)
 		case "Events":
 			evtLines = append(evtLines, ln)
+		case "Command Briefing":
+			cbLines = append(cbLines, ln)
+		case "Briefing":
+			brLines = append(brLines, ln)
+		case "Debriefing":
+			dbLines = append(dbLines, ln)
 		}
 	}
 
 	m.parseMessages(msgLines)
 	m.parseObjects(objLines)
 	m.parseEvents(evtLines)
+	m.parseCmdBriefing(cbLines)
+	m.parseBriefing(brLines)
+	m.parseDebriefing(dbLines)
 	return m
+}
+
+// multiTextKeys open a text block terminated by $end_multi_text, inside which
+// '#' lines must not be taken as section headers.
+var multiTextKeys = []string{"$MessageNew:", "$Message:", "$Stage Text:", "$multi_text", "$Multi text", "$Recommendation text:"}
+
+func startsMultiText(ln string) bool {
+	_, ok := firstField(ln, multiTextKeys...)
+	return ok
 }
 
 // sectionName maps a '#...' header line to a short key we care about.
@@ -95,6 +114,12 @@ func sectionName(headerLine string) string {
 		return "Objects"
 	case "events":
 		return "Events"
+	case "command briefing":
+		return "Command Briefing"
+	case "briefing":
+		return "Briefing"
+	case "debriefing_info":
+		return "Debriefing"
 	}
 	return "other"
 }

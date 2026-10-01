@@ -15,6 +15,7 @@ type entry struct {
 	Note     string // "random variant", "alternative ...", "training message", or ""
 	SrcLine  int
 	Orphan   bool
+	Section  string // secCmdBriefing / secBriefing / secMessages / secDebriefing
 }
 
 type resolver struct {
@@ -92,6 +93,9 @@ func buildEntries(m *mission, dedup, includeOrphans bool) []entry {
 		}
 		out = append(out, e)
 	}
+
+	pre, post := briefingEntries(m)
+	out = append(append(pre, out...), post...)
 
 	if includeOrphans {
 		var names []string
@@ -338,7 +342,8 @@ func waveOf(m *message) string {
 func waveToFilename(w string) string {
 	w = strings.TrimSpace(w)
 	lw := strings.ToLower(w)
-	if w == "" || lw == "none" || lw == "msg.wav" || lw == "message.wav" || lw == "msg.ogg" {
+	if w == "" || lw == "none" || lw == "msg.wav" || lw == "message.wav" || lw == "msg.ogg" ||
+		strings.HasPrefix(lw, "none.") {
 		return "TODO"
 	}
 	if i := strings.LastIndex(w, "."); i >= 0 {

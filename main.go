@@ -4,6 +4,9 @@
 // where the speaker is encoded in the message name and resolved through
 // set-message-alias / set-freetext-message-alias events.
 //
+// Command briefing, briefing and debriefing stages are exported too, in their
+// own sections of the same file.
+//
 // Output: one plain-text file per mission, blocks of
 //
 //	Sender:   <ship / wing / Command>
@@ -71,18 +74,20 @@ func main() {
 			continue
 		}
 
-		voiced, orphans := 0, 0
+		voiced, briefs, orphans := 0, 0, 0
 		for _, e := range entries {
-			if e.Orphan {
+			if e.Section != secMessages {
+				briefs++
+			} else if e.Orphan {
 				orphans++
 			} else {
 				voiced++
 			}
 		}
-		total += voiced
-		fmt.Printf("%-20s %3d messages, %3d orphan  -> %s\n", base, voiced, orphans, outPath)
+		total += voiced + briefs
+		fmt.Printf("%-20s %3d messages, %3d briefing, %3d orphan  -> %s\n", base, voiced, briefs, orphans, outPath)
 	}
-	fmt.Printf("\nTotal: %d messages across %d missions.\n", total, len(files))
+	fmt.Printf("\nTotal: %d voiced lines across %d missions.\n", total, len(files))
 
 	if !*noPersonas {
 		pPath := filepath.Join(*out, "personas.md")

@@ -20,6 +20,24 @@ Note:     random variant   # optional: random variant / alternative / training m
 
 Each file ends with an `--- ORPHANS ---` section listing `#Messages` entries that no event triggers (useful for coverage checks / trimming dead text).
 
+### Briefings
+
+Voiced briefing stages are exported into the same file. When a mission has any, the script is split into sections, in this order:
+
+```
+--- COMMAND BRIEFING ---   # #Command Briefing stages      (+Wave Filename)
+--- BRIEFING ---           # #Briefing stages              ($voice)
+--- MISSION MESSAGES ---   # the #Messages lines described above
+--- DEBRIEFING ---         # #Debriefing_info stages       ($Voice)
+--- ORPHANS ... ---
+```
+
+A briefing block uses `Sender: Command Briefing` / `Briefing` / `Debriefing`, and `Ref: cmd-brief stage 3`, `brief stage 2` (`brief team 2 stage 2` in multi-team missions) or `debrief stage 1`. A debriefing stage shown only under a condition gets `Note: when <event name>`, or `when <formula>` for anything more complex than `is-event-true(-delay)`.
+
+Not exported: briefing icon descriptions and debriefing recommendation text (they are not voiced).
+
+FS2 text markup is stripped from briefing text: colour tags (`$b`, `$f`, `$h`, `$W`, `$y`, …) are removed, and `$slash`, `$quote`, `$semicolon` become `/`, `"`, `;`. Line breaks are joined into one line, the same as for messages. A voice file of `none.wav` (or any `none.*`) is written as `TODO`.
+
 Additionally a **`personas.md`** file is produced - a combined Markdown table of every sender and the missions they appear in:
 
 | Sender | Persona(s) | Missions | Lines |

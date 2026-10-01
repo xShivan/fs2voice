@@ -201,3 +201,87 @@ func TestSexpParserNested(t *testing.T) {
 		t.Errorf("nested send-message message arg = %q, want m", got)
 	}
 }
+
+func TestBriefingSections(t *testing.T) {
+	entries := loadSample(t)
+	want := []struct{ section, sender, ref, text, file, note string }{
+		{secCmdBriefing, "Command Briefing", "cmd-brief stage 1", "Welcome aboard Date: 11/04/2333", "v99_cb01.ogg", ""},
+		{secCmdBriefing, "Command Briefing", "cmd-brief stage 2", "Second stage. #not a section header", "TODO", ""},
+		{secBriefing, "Briefing", "brief stage 1", "Welcome to Steelward, pilots.", "v99_b01.ogg", ""},
+		{secBriefing, "Briefing", "brief stage 2", "Stay sharp.", "v99_b02.ogg", ""},
+		{secDebriefing, "Debriefing", "debrief stage 1", "Good work. Dismissed.", "v99_db01.ogg", "when DB success"},
+		{secDebriefing, "Debriefing", "debrief stage 2", "Always shown.", "TODO", ""},
+	}
+	var got []entry
+	for _, e := range entries {
+		if e.Section != secMessages {
+			got = append(got, e)
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d briefing entries, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		g := got[i]
+		if g.Section != w.section || g.Sender != w.sender || g.MsgName != w.ref ||
+			g.Text != w.text || g.Filename != w.file || g.Note != w.note {
+			t.Errorf("entry %d = %+v, want %+v", i, g, w)
+		}
+	}
+	// Order: briefings first, debriefing after the mission messages, before orphans.
+	if entries[0].Section != secCmdBriefing {
+		t.Errorf("first entry section = %q, want command briefing", entries[0].Section)
+	}
+	lastDebrief, firstOrphan := -1, -1
+	for i, e := range entries {
+		if e.Section == secDebriefing {
+			lastDebrief = i
+		}
+		if e.Orphan && firstOrphan < 0 {
+			firstOrphan = i
+		}
+	}
+	if firstOrphan >= 0 && lastDebrief > firstOrphan {
+		t.Errorf("debriefing (idx %d) after orphans (idx %d)", lastDebrief, firstOrphan)
+	}
+	// Messages parsed after the briefing sections are unaffected.
+	if find(entries, "hello") == nil {
+		t.Error("hello message lost after adding briefing sections")
+	}
+}
+
+func TestRenderBriefingHeaders(t *testing.T) {
+	raw, err := os.ReadFile("testdata/sample.fs2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := parseMission("sample.fs2", raw)
+	out := renderScript(m, buildEntries(m, true, true))
+	last := -1
+	for _, h := range []string{"--- COMMAND BRIEFING ---", "--- BRIEFING ---", "--- MISSION MESSAGES ---", "--- DEBRIEFING ---", "--- ORPHANS"} {
+		i := strings.Index(out, h)
+		if i < 0 || i < last {
+			t.Errorf("header %q missing or out of order\n%s", h, out)
+		}
+		last = i
+	}
+	for _, bad := range []string{"not voiced", "$b", "$slash"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output unexpectedly contains %q", bad)
+		}
+	}
+}
+
+func TestStripMarkup(t *testing.T) {
+	cases := map[string]string{
+		"$b * $b GTCa $b Adrastea":  "* GTCa Adrastea",
+		"11$slash04 $quotehi$quote": `11/04 "hi"`,
+		"a$semicolon b $W":          "a; b",
+		"cost $100":                 "cost $100",
+	}
+	for in, want := range cases {
+		if got := stripMarkup(in); got != want {
+			t.Errorf("stripMarkup(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
