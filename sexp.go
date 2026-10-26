@@ -14,6 +14,7 @@ type node struct {
 	Value  string  // atom text (unquoted content for quoted atoms)
 	Quoted bool    // atom was a "..." string
 	Line   int     // 1-based file line where the token starts
+	Col    int     // 0-based byte column in that line where the token starts
 }
 
 func (n *node) isList() bool { return n.Items != nil }
@@ -26,12 +27,13 @@ func (n *node) head() string {
 	return ""
 }
 
-// parseSexps parses every top-level S-expression found in src. startLine is the
-// 1-based file line of the first character of src, used to attribute nodes to
-// file lines. Malformed / unbalanced input is tolerated: parsing stops at the
-// first point it can no longer make progress.
-func parseSexps(src string, startLine int) []*node {
-	p := &sexpParser{src: src, line: startLine}
+// parseSexps parses every top-level S-expression found in src. startLine and
+// startCol are the 1-based file line and 0-based byte column of the first
+// character of src, used to attribute nodes to file positions. Malformed /
+// unbalanced input is tolerated: parsing stops at the first point it can no
+// longer make progress.
+func parseSexps(src string, startLine, startCol int) []*node {
+	p := &sexpParser{src: src, line: startLine, colBase: startCol}
 	var out []*node
 	for {
 		p.skipSpace()
@@ -53,19 +55,25 @@ func parseSexps(src string, startLine int) []*node {
 }
 
 type sexpParser struct {
-	src  string
-	pos  int
-	line int
+	src       string
+	pos       int
+	line      int
+	lineStart int // pos of the first character of the current line
+	colBase   int // column offset of the first line (src may start mid-line)
 }
 
 func (p *sexpParser) advance() {
 	if p.pos < len(p.src) {
 		if p.src[p.pos] == '\n' {
 			p.line++
+			p.lineStart = p.pos + 1
+			p.colBase = 0
 		}
 		p.pos++
 	}
 }
+
+func (p *sexpParser) col() int { return p.colBase + p.pos - p.lineStart }
 
 func (p *sexpParser) skipSpace() {
 	for p.pos < len(p.src) {
@@ -87,7 +95,7 @@ func (p *sexpParser) skipSpace() {
 
 // parseForm parses a single '(' ... ')' list. Assumes current char is '('.
 func (p *sexpParser) parseForm() *node {
-	list := &node{Items: []*node{}, Line: p.line}
+	list := &node{Items: []*node{}, Line: p.line, Col: p.col()}
 	p.advance() // consume '('
 	for {
 		p.skipSpace()
@@ -114,7 +122,7 @@ func (p *sexpParser) parseForm() *node {
 }
 
 func (p *sexpParser) parseString() *node {
-	startLine := p.line
+	startLine, startCol := p.line, p.col()
 	p.advance() // consume opening quote
 	var b []byte
 	for p.pos < len(p.src) {
@@ -126,11 +134,11 @@ func (p *sexpParser) parseString() *node {
 		b = append(b, c)
 		p.advance()
 	}
-	return &node{Value: string(b), Quoted: true, Line: startLine}
+	return &node{Value: string(b), Quoted: true, Line: startLine, Col: startCol}
 }
 
 func (p *sexpParser) parseAtom() *node {
-	startLine := p.line
+	startLine, startCol := p.line, p.col()
 	start := p.pos
 	for p.pos < len(p.src) {
 		c := p.src[p.pos]
@@ -139,7 +147,7 @@ func (p *sexpParser) parseAtom() *node {
 		}
 		p.pos++
 	}
-	return &node{Value: p.src[start:p.pos], Quoted: false, Line: startLine}
+	return &node{Value: p.src[start:p.pos], Quoted: false, Line: startLine, Col: startCol}
 }
 
 // walk visits n and every descendant list node, depth-first, pre-order.

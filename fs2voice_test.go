@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/binary"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -187,7 +189,7 @@ func TestDisplayName(t *testing.T) {
 }
 
 func TestSexpParserNested(t *testing.T) {
-	forms := parseSexps(`( when ( and ( true ) ( > ( mission-time ) 5 ) ) ( send-message "A" "Normal" "m" ) )`, 1)
+	forms := parseSexps(`( when ( and ( true ) ( > ( mission-time ) 5 ) ) ( send-message "A" "Normal" "m" ) )`, 1, 0)
 	if len(forms) != 1 {
 		t.Fatalf("got %d forms", len(forms))
 	}
@@ -283,5 +285,364 @@ func TestStripMarkup(t *testing.T) {
 		if got := stripMarkup(in); got != want {
 			t.Errorf("stripMarkup(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// --- --fix-durations ----------------------------------------------------------
+
+// oggPage builds a minimal Ogg page holding one packet.
+func oggPage(granule int64, packet []byte) []byte {
+	p := []byte("OggS")
+	p = append(p, 0, 0)
+	p = binary.LittleEndian.AppendUint64(p, uint64(granule))
+	p = append(p, make([]byte, 12)...) // serial, sequence, CRC (not checked)
+	p = append(p, 1, byte(len(packet)))
+	return append(p, packet...)
+}
+
+func writeVorbis(t *testing.T, path string, rate uint32, samples int64) {
+	t.Helper()
+	id := append([]byte("\x01vorbis"), 0, 0, 0, 0, 1)
+	id = binary.LittleEndian.AppendUint32(id, rate)
+	id = append(id, make([]byte, 14)...)
+	data := append(oggPage(0, id), oggPage(samples, []byte("audio"))...)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeWav(t *testing.T, path string, byteRate uint32, dataSize int) {
+	t.Helper()
+	b := []byte("RIFF\x00\x00\x00\x00WAVEfmt ")
+	b = binary.LittleEndian.AppendUint32(b, 16)
+	b = append(b, 1, 0, 1, 0) // PCM, mono
+	b = binary.LittleEndian.AppendUint32(b, byteRate)
+	b = binary.LittleEndian.AppendUint32(b, byteRate)
+	b = append(b, 1, 0, 8, 0)
+	b = append(b, "data"...)
+	b = binary.LittleEndian.AppendUint32(b, uint32(dataSize))
+	b = append(b, make([]byte, dataSize)...)
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAudioDuration(t *testing.T) {
+	dir := t.TempDir()
+	ogg := filepath.Join(dir, "a.ogg")
+	writeVorbis(t, ogg, 44100, 44100*5+1) // just over 5 s
+	if ms, err := audioDuration(ogg); err != nil || ms != 5001 {
+		t.Errorf("ogg: %d, %v; want 5001", ms, err)
+	}
+	wav := filepath.Join(dir, "b.wav")
+	writeWav(t, wav, 11025, 11025*3/2) // 1.5 s
+	if ms, err := audioDuration(wav); err != nil || ms != 1500 {
+		t.Errorf("wav: %d, %v; want 1500", ms, err)
+	}
+}
+
+const durMission = `#Events
+
+$Formula: ( when ( true ) ( send-message-list-alt "A: one" 5000 "A: two" -3000 "A: three" 9000 ) )
++Name: Alt list
++Repeat Count: 1
+
+$Formula: ( when
+   ( true )
+   ( send-message-list
+      "#Command" "Normal" "one" 0
+      "#Command" "Normal" "two" 2000
+      "#Command" "Normal" "three" 1000
+   )
+)
++Name: Stock list
+
+#Messages
+
+$Name: A: one
+$MessageNew: XSTR("1", -1)
+$end_multi_text
++Wave Name: one.wav
+
+$Name: A: two
+$MessageNew: XSTR("2", -1)
+$end_multi_text
++Wave Name: two.ogg
+
+$Name: A: three
+$MessageNew: XSTR("3", -1)
+$end_multi_text
++Wave Name: three.ogg
+
+$Name: one
+$MessageNew: XSTR("1", -1)
+$end_multi_text
++Wave Name: one.ogg
+
+$Name: two
+$MessageNew: XSTR("2", -1)
+$end_multi_text
++Wave Name: two.ogg
+
+$Name: three
+$MessageNew: XSTR("3", -1)
+$end_multi_text
++Wave Name: missing.ogg
+
+#End
+`
+
+func TestFixDurations(t *testing.T) {
+	dir := t.TempDir()
+	writeVorbis(t, filepath.Join(dir, "one.ogg"), 22050, 22050*6+100) // 6.0x s -> 8000
+	writeVorbis(t, filepath.Join(dir, "two.ogg"), 22050, 22050*3)     // 3.0 s, "A: two" 3000 is enough; stock delay -> 4000
+	writeVorbis(t, filepath.Join(dir, "three.ogg"), 22050, 22050*8)   // 8.0 s, 9000 is enough
+	voice, err := indexVoiceDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw := []byte(strings.ReplaceAll(durMission, "\n", "\r\n"))
+	m := parseMission("d.fs2", raw)
+	res := newDurChecker(voice).fixDurations(m)
+
+	// "A: one" (one.wav -> one.ogg): 5000 -> 8000 (audio rounded up + 1 s); "A: two" exactly 3 s: kept.
+	// Stock: "one" (6.x s) raises the delay of "two" 2000 -> 8000; "two" (3 s)
+	// raises the delay of "three" 1000 -> 3000.
+	if len(res.Edits) != 3 {
+		t.Fatalf("edits = %+v, want 3", res.Edits)
+	}
+	if e := res.Edits[0]; e.Event != "Alt list" || e.MsgName != "A: one" || e.Old != "5000" || e.New != "8000" {
+		t.Errorf("edit 0 = %+v", e)
+	}
+	if e := res.Edits[1]; e.Event != "Stock list" || e.MsgName != "one" || e.Next != "two" || e.New != "8000" {
+		t.Errorf("edit 1 = %+v", e)
+	}
+	if e := res.Edits[2]; e.MsgName != "two" || e.Next != "three" || e.Old != "1000" || e.New != "4000" {
+		t.Errorf("edit 2 = %+v", e)
+	}
+	if res.Missing != 0 {
+		t.Errorf("missing = %d, want 0 (last stock message is not checked)", res.Missing)
+	}
+
+	out, err := applyEdits(raw, res.Edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.NewReplacer(
+		`"A: one" 5000`, `"A: one" 8000`,
+		`"two" 2000`, `"two" 8000`,
+		`"three" 1000`, `"three" 4000`,
+	).Replace(string(raw))
+	if string(out) != want {
+		t.Errorf("rewritten file differs:\n%s", out)
+	}
+
+	// Idempotent: a second pass finds nothing.
+	if again := newDurChecker(voice).fixDurations(parseMission("d.fs2", out)); len(again.Edits) != 0 {
+		t.Errorf("second pass edits = %+v", again.Edits)
+	}
+}
+
+func TestFixDurationsNegativeAlternative(t *testing.T) {
+	dir := t.TempDir()
+	writeVorbis(t, filepath.Join(dir, "two.ogg"), 1000, 4500) // 4.5 s -> 5000
+	voice, _ := indexVoiceDir(dir)
+	src := strings.Replace(durMission, `"A: one" 5000`, `"A: one" -1`, 1)
+	m := parseMission("d.fs2", []byte(src))
+	res := newDurChecker(voice).fixDurations(m)
+	if len(res.Edits) == 0 || res.Edits[0].MsgName != "A: two" || res.Edits[0].New != "-6000" {
+		t.Errorf("edits = %+v, want A: two -3000 -> -6000 first", res.Edits)
+	}
+	if res.Missing == 0 {
+		t.Error("missing one.ogg / three.ogg not counted")
+	}
+}
+
+const shiftMission = `#Events
+
+$Formula: ( when ( true ) ( send-message-list-alt "A: one" 5000 "A: two" 6000 "A: three" 1 ) )
++Name: Dialogue
++Repeat Count: 1
+
+$Formula: ( when ( is-event-true-delay "Dialogue" 3 ) ( do-nothing ) )
++Name: Early
++Chained: 6
++Repeat Count: 1
+
+$Formula: ( when ( is-event-true-delay "Dialogue" 7 ) ( do-nothing ) )
++Name: Middle
++Repeat Count: 1
+
+
+$Formula: ( when ( is-event-true-delay "Dialogue" 12 ) ( do-nothing ) )
++Name: After
++Repeat Count: 1
+
+$Formula: ( when ( is-event-true-msecs-delay "Dialogue" 5000 ) ( do-nothing ) )
++Name: Msecs
++Repeat Count: 1
+
+$Formula: ( when ( is-event-true-delay "After" 2 ) ( do-nothing ) )
++Name: Downstream
++Repeat Count: 1
+
+#Objects
+
+$Name: Ship
+$Arrival Cue: ( is-event-true-delay "Dialogue" 11 )
+
+#Messages
+
+$Name: A: one
+$MessageNew: XSTR("1", -1)
+$end_multi_text
++Wave Name: one.ogg
+
+$Name: A: two
+$MessageNew: XSTR("2", -1)
+$end_multi_text
++Wave Name: two.ogg
+
+$Name: A: three
+$MessageNew: XSTR("3", -1)
+$end_multi_text
++Wave Name: three.ogg
+
+#End
+`
+
+func TestShiftDependents(t *testing.T) {
+	dir := t.TempDir()
+	writeVorbis(t, filepath.Join(dir, "one.ogg"), 22050, 22050*8)   // 8 s vs 5000 -> 9000 (+4 s)
+	writeVorbis(t, filepath.Join(dir, "two.ogg"), 22050, 22050*3)   // 3 s vs 6000: kept
+	writeVorbis(t, filepath.Join(dir, "three.ogg"), 22050, 22050*9) // last step, time 1: kept
+	voice, _ := indexVoiceDir(dir)
+
+	raw := []byte(strings.ReplaceAll(shiftMission, "\n", "\r\n"))
+	m := parseMission("s.fs2", raw)
+	res := newDurChecker(voice).fixDurations(m)
+	shiftDependents(raw, m, &res)
+	out, err := applyEdits(raw, res.Edits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	// 3 s lies inside message 1 (S_1 = 0): unchanged. 7 s and 11 s are in
+	// message 2 / after it and move by 4 s; 12 s is after the end.
+	checks := map[string]bool{
+		`( is-event-true-delay "Dialogue" 3 )`:                true,
+		`( is-event-true-delay "Dialogue" 11 ) ( do`:          true,
+		`( is-event-true-delay "Dialogue" 16 ) ( do`:          true,
+		`( is-event-true-msecs-delay "Dialogue" 9000 )`:       true,
+		`$Arrival Cue: ( is-event-true-delay "Dialogue" 15 )`: true,
+		`( is-event-true-delay "After" 2 )`:                   true,
+		"+Chained: 10":                                        true,
+	}
+	for s := range checks {
+		if !strings.Contains(got, s) {
+			t.Errorf("missing %q in:\n%s", s, got)
+		}
+	}
+	if strings.Contains(got, "\n") && !strings.Contains(got, "\r\n") {
+		t.Error("CRLF lost")
+	}
+
+	// Second pass: nothing to do.
+	m2 := parseMission("s.fs2", out)
+	again := newDurChecker(voice).fixDurations(m2)
+	shiftDependents(out, m2, &again)
+	if len(again.Edits) != 0 {
+		t.Errorf("second pass edits = %+v", again.Edits)
+	}
+}
+
+func mkVoiceLayout(t *testing.T) (root, missions, voice string) {
+	t.Helper()
+	root = t.TempDir()
+	missions = filepath.Join(root, "tvwp_core", "data", "missions")
+	voice = filepath.Join(root, "tvwp_voice", "data", "voice")
+	for _, d := range []string{missions, filepath.Join(voice, "special"), filepath.Join(root, "tvwp_music", "data", "music")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return
+}
+
+func TestResolveVoiceDirAutoDetect(t *testing.T) {
+	_, missions, voice := mkVoiceLayout(t)
+	got, src, err := resolveVoiceDir("", missions, "", config{})
+	if err != nil || got != voice || src != "auto-detected" {
+		t.Errorf("got %q, %q, %v; want %q auto-detected", got, src, err, voice)
+	}
+}
+
+func TestResolveVoiceDirLegacyLayout(t *testing.T) {
+	root := t.TempDir()
+	missions := filepath.Join(root, "data", "missions")
+	voice := filepath.Join(root, "data", "voice")
+	for _, d := range []string{missions, voice} {
+		os.MkdirAll(d, 0o755)
+	}
+	got, _, err := resolveVoiceDir("", missions, "", config{})
+	if err != nil || filepath.Clean(got) != filepath.Clean(voice) {
+		t.Errorf("got %q, %v; want %q", got, err, voice)
+	}
+}
+
+func TestResolveVoiceDirPriority(t *testing.T) {
+	_, missions, _ := mkVoiceLayout(t)
+	a, b, c := t.TempDir(), t.TempDir(), t.TempDir()
+	cfg := config{Voice: c}
+	if got, src, _ := resolveVoiceDir(a, missions, b, cfg); got != a || src != "--voice" {
+		t.Errorf("flag: %q, %q", got, src)
+	}
+	if got, src, _ := resolveVoiceDir("", missions, b, cfg); got != b || src != voiceEnvVar {
+		t.Errorf("env: %q, %q", got, src)
+	}
+	if got, src, _ := resolveVoiceDir("", missions, "", cfg); got != c || src != configFileName {
+		t.Errorf("config: %q, %q", got, src)
+	}
+}
+
+func TestResolveVoiceDirErrors(t *testing.T) {
+	root := t.TempDir()
+	missions := filepath.Join(root, "x", "data", "missions")
+	os.MkdirAll(missions, 0o755)
+	if _, _, err := resolveVoiceDir("", missions, "", config{}); err == nil || !strings.Contains(err.Error(), "--voice") {
+		t.Errorf("not found: err = %v, want a hint about --voice", err)
+	}
+	if _, _, err := resolveVoiceDir(filepath.Join(root, "nope"), missions, "", config{}); err == nil {
+		t.Error("missing --voice dir accepted")
+	}
+	// Two unrelated packages with data/voice: ambiguous.
+	_, m2, _ := mkVoiceLayout(t)
+	os.MkdirAll(filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(m2))), "other", "data", "voice"), 0o755)
+	// tvwp_voice is chosen because its name contains "voice".
+	if got, _, err := resolveVoiceDir("", m2, "", config{}); err != nil || !strings.Contains(got, "tvwp_voice") {
+		t.Errorf("name preference: %q, %v", got, err)
+	}
+}
+
+func TestLoadConfig(t *testing.T) {
+	dir := t.TempDir()
+	if c, err := loadConfig(dir); err != nil || c != (config{}) {
+		t.Errorf("missing file: %+v, %v", c, err)
+	}
+	os.WriteFile(filepath.Join(dir, configFileName), []byte("{\"voice\": \"../audio\", \"dir\": \"C:/abs/missions\"}"), 0o644)
+	c, err := loadConfig(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "../audio"); c.Voice != want {
+		t.Errorf("voice = %q, want %q (relative to the config file)", c.Voice, want)
+	}
+	if c.Dir != "C:/abs/missions" {
+		t.Errorf("dir = %q", c.Dir)
+	}
+	os.WriteFile(filepath.Join(dir, configFileName), []byte(`{oops`), 0o644)
+	if _, err := loadConfig(dir); err == nil || !strings.Contains(err.Error(), configFileName) {
+		t.Errorf("bad json: %v", err)
 	}
 }

@@ -31,3 +31,6 @@ $RECYCLE.BIN/
 # Windows shortcuts
 *.lnk
 fs2voice-out
+
+# local settings
+fs2voice.json

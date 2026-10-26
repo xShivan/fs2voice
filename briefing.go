@@ -145,7 +145,7 @@ func (m *mission) parseDebriefing(lines []string) {
 				b.WriteByte('\n')
 				depth, inStr = parenDelta(lines[i], depth, inStr)
 			}
-			m.Debriefing = append(m.Debriefing, briefStage{Cond: describeCond(parseSexps(b.String(), 1))})
+			m.Debriefing = append(m.Debriefing, briefStage{Cond: describeCond(parseSexps(b.String(), 1, 0))})
 			cur = len(m.Debriefing) - 1
 			continue
 		}

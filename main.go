@@ -31,7 +31,24 @@ func main() {
 	noDedup := flag.Bool("no-dedup", false, "do not merge repeated messages within a mission")
 	noOrphans := flag.Bool("no-orphans", false, "skip the ORPHANS section")
 	noPersonas := flag.Bool("no-personas", false, "do not generate the combined personas.md table")
+	fixDur := flag.Bool("fix-durations", false, "raise message timings shorter than their voice files, then exit")
+	voiceDir := flag.String("voice", "", "voice files directory for --fix-durations (default: $FS2VOICE_VOICE, \"voice\" in fs2voice.json, or auto-detected)")
+	dryRun := flag.Bool("dry-run", false, "with --fix-durations: only report, do not modify mission files")
 	flag.Parse()
+
+	cfg, err := loadConfig(exeDir())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	set := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if !set["dir"] && cfg.Dir != "" {
+		*dir = cfg.Dir
+	}
+	if !set["out"] && cfg.Out != "" {
+		*out = cfg.Out
+	}
 
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "error: --dir is required")
@@ -52,6 +69,20 @@ func main() {
 	if err := os.MkdirAll(*out, 0o755); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
+	}
+
+	if *fixDur {
+		vd, source, err := resolveVoiceDir(*voiceDir, *dir, os.Getenv(voiceEnvVar), cfg)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Voice files: %s (%s)\n", vd, source)
+		if err := runFixDurations(files, vd, *out, *dryRun); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	agg := newSenderAgg()
@@ -97,6 +128,55 @@ func main() {
 			fmt.Printf("%-20s %3d senders            -> %s\n", "sender table", len(agg.lines), pPath)
 		}
 	}
+}
+
+// runFixDurations applies --fix-durations to every mission and writes the
+// report to stdout and to <out>/durations-report.txt.
+func runFixDurations(files []string, voiceDir, out string, dryRun bool) error {
+	voice, err := indexVoiceDir(voiceDir)
+	if err != nil {
+		return err
+	}
+	if len(voice) == 0 {
+		return fmt.Errorf("no .ogg/.wav files found in %s", voiceDir)
+	}
+	chk := newDurChecker(voice)
+
+	var results []durResult
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "skipping %s: %v\n", f, err)
+			continue
+		}
+		m := parseMission(filepath.Base(f), raw)
+		res := chk.fixDurations(m)
+		shiftDependents(raw, m, &res)
+		results = append(results, res)
+		if dryRun || len(res.Edits) == 0 {
+			continue
+		}
+		fixed, err := applyEdits(raw, res.Edits)
+		if err != nil {
+			return fmt.Errorf("%s: %w (file left unchanged)", f, err)
+		}
+		info, err := os.Stat(f)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(f, fixed, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+
+	report := renderDurationReport(results, dryRun)
+	fmt.Print(report)
+	rPath := filepath.Join(out, "durations-report.txt")
+	if err := os.WriteFile(rPath, []byte(report), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("\nReport written to %s\n", rPath)
+	return nil
 }
 
 // listMissions returns the .fs2 files to process, skipping backups and the

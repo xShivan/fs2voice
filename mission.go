@@ -19,6 +19,18 @@ type shipInfo struct {
 	Persona  string // +Persona Name:
 }
 
+// event is one #Events entry: its +Name: and parsed $Formula:.
+type event struct {
+	Name    string
+	Formula *node
+	Rec     int // index of the $Formula: record in the file (0-based)
+
+	// +Chained: N (seconds after the previous record). Chain is "" if absent.
+	Chain     string
+	ChainLine int // 1-based file line
+	ChainCol  int // 0-based byte column of the number
+}
+
 // mission holds everything parsed from a single .fs2 file that the script
 // generator needs.
 type mission struct {
@@ -27,9 +39,11 @@ type mission struct {
 	Messages      map[string]*message
 	Ships         map[string]*shipInfo
 	Formulas      []*node // parsed $Formula: SEXP trees from #Events
+	Events        []event // the same formulas, paired with their event names
 	CmdBriefing   []briefStage
 	Briefings     [][]briefStage // one per $start_briefing (per team in multiplayer)
 	Debriefing    []briefStage
+	nRec          int // number of $Formula: records seen in #Events
 }
 
 var (
@@ -54,7 +68,8 @@ func parseMission(file string, raw []byte) *mission {
 	section := ""
 	inMultiText := false
 	var msgLines, objLines, evtLines, cbLines, brLines, dbLines []string
-	for _, ln := range lines {
+	evtStart := 1 // 1-based file line of evtLines[0]
+	for i, ln := range lines {
 		trimmed := strings.TrimRight(ln, " \t")
 		if !inMultiText && strings.HasPrefix(trimmed, "#") {
 			section = sectionName(trimmed)
@@ -71,6 +86,9 @@ func parseMission(file string, raw []byte) *mission {
 		case "Objects":
 			objLines = append(objLines, ln)
 		case "Events":
+			if evtLines == nil {
+				evtStart = i + 1
+			}
 			evtLines = append(evtLines, ln)
 		case "Command Briefing":
 			cbLines = append(cbLines, ln)
@@ -83,7 +101,7 @@ func parseMission(file string, raw []byte) *mission {
 
 	m.parseMessages(msgLines)
 	m.parseObjects(objLines)
-	m.parseEvents(evtLines)
+	m.parseEvents(evtLines, evtStart)
 	m.parseCmdBriefing(cbLines)
 	m.parseBriefing(brLines)
 	m.parseDebriefing(dbLines)
@@ -253,7 +271,9 @@ func (m *mission) parseObjects(lines []string) {
 
 // parseEvents collects each "$Formula:" S-expression from the #Events section by
 // brace balancing (ignoring parens inside quoted strings), then parses it.
-func (m *mission) parseEvents(lines []string) {
+// firstLine is the 1-based file line of lines[0], so parsed nodes carry real
+// file positions.
+func (m *mission) parseEvents(lines []string, firstLine int) {
 	i := 0
 	for i < len(lines) {
 		ln := lines[i]
@@ -262,8 +282,9 @@ func (m *mission) parseEvents(lines []string) {
 			i++
 			continue
 		}
-		startLine := i + 1 // 1-based within the events slice; good enough for ordering
-		rest := ln[idx+len("$Formula:"):]
+		startLine := firstLine + i
+		startCol := idx + len("$Formula:")
+		rest := ln[startCol:]
 		var b strings.Builder
 		b.WriteString(rest)
 		b.WriteByte('\n')
@@ -275,9 +296,32 @@ func (m *mission) parseEvents(lines []string) {
 			depth, inStr = parenDelta(lines[j], depth, inStr)
 			j++
 		}
-		forms := parseSexps(b.String(), startLine)
+		forms := parseSexps(b.String(), startLine, startCol)
 		m.Formulas = append(m.Formulas, forms...)
 		i = j
+
+		// The event's +Name: follows its formula.
+		ev := event{Rec: m.nRec}
+		m.nRec++
+		for k := j; k < len(lines) && !strings.Contains(lines[k], "$Formula:"); k++ {
+			if v, ok := fieldValue(lines[k], "+Name:"); ok && ev.Name == "" {
+				ev.Name = stripInlineComment(v)
+			}
+			if v, ok := fieldValue(lines[k], "+Chained:"); ok {
+				ev.Chain = stripInlineComment(v)
+				ev.ChainLine = firstLine + k
+				col := strings.Index(lines[k], "+Chained:") + len("+Chained:")
+				for col < len(lines[k]) && (lines[k][col] == ' ' || lines[k][col] == '\t') {
+					col++
+				}
+				ev.ChainCol = col
+			}
+		}
+		for _, f := range forms {
+			e := ev
+			e.Formula = f
+			m.Events = append(m.Events, e)
+		}
 	}
 }
 
